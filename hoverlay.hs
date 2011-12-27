@@ -24,26 +24,6 @@ import Data.Maybe
 import Prelude hiding (catch)
 import Control.Exception
 
---data OverlayHeader = OverlayHeader {
---  overlayHeaderMagic  :: Int,
---  overlayHeaderLength :: Int,
---  overlayHeaderType   :: Int
---} deriving (Show, Eq)
-
---overlayHeaderSize = 3 * 4
---hGetOverlayHeader :: Handle -> IO (Maybe OverlayHeader)
---hGetOverlayHeader h = do
---  str <- L.hGet h overlayHeaderSize
---  if L.length str < overlayHeaderSize
---    then return Nothing
---    else return $ Just (decode str)
-
---instance Binary OverlayHeader where
---  put (OverlayHeader m l t) = forM_ [m, l, t] (putWord32host . fromIntegral)
---  get = do
---    [m, l, t] <- replicateM 3 (fromIntegral `fmap` getWord32host)
---    return $ OverlayHeader m l t
-
 data OverlayMsg =
       OverlayMsgInit {
         overlayMsgInitWidth  :: Int,
