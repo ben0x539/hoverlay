@@ -1,11 +1,9 @@
 {-# LANGUAGE ViewPatterns, ForeignFunctionInterface #-}
 
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Control.Monad
 import Control.Applicative
 import System.IO
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Graphics.UI.Gtk
@@ -18,9 +16,10 @@ import System.Posix.IO
 import System.Posix.SharedMem
 import System.Posix.Files
 import Data.Array.MArray
-import Foreign.C.Types
 import Foreign.Ptr
+import Foreign.Storable
 import Bindings.MMap
+import Data.Maybe
 
 import Prelude hiding (catch)
 import Control.Exception
@@ -69,11 +68,13 @@ data OverlayMsg =
         overlayMsgInteractiveInteractive :: Bool
   } deriving (Show)
 
+overlayMagicNumber :: Num a => a
 overlayMagicNumber = 5
 
 getNum32host :: (Num a) => Get a
 getNum32host = fromIntegral `fmap` getWord32host
 
+hGetOverlayMsg :: Handle -> IO OverlayMsg
 hGetOverlayMsg h = do
   str <- L.hGet h 8
   when (L.length str < 8) $
@@ -85,7 +86,7 @@ hGetOverlayMsg h = do
   let n = getNum32host
       s = ((L8.unpack . fst . L.break (==0)) `fmap` getRemainingLazyByteString)
       b = (toEnum `fmap` getNum32host)
-  return . flip runGet bstr $ case runGet getNum32host tstr of
+  return . flip runGet bstr $ case runGet getWord32host tstr of
     0 -> OverlayMsgInit <$> n <*> n
     1 -> OverlayMsgShmem <$> s
     2 -> OverlayMsgBlit <$> n <*> n <*> n <*> n
@@ -95,7 +96,8 @@ hGetOverlayMsg h = do
     6 -> OverlayMsgInteractive <$> b
     _ -> throw $ userError "hGetOverlayMsg: unknown message type"
 
-hPutOverlayMsg h msg = do
+hPutOverlayMsg :: Handle -> OverlayMsg -> IO ()
+hPutOverlayMsg handle msg = do
   let n = putWord32host . fromIntegral
       s l str =    putLazyByteString (L8.pack str)
                 *> replicateM_ (l - length str) (putWord8 0)
@@ -110,19 +112,23 @@ hPutOverlayMsg h msg = do
   let buf = runPut (   putWord32host overlayMagicNumber
                     *> putWord32host (fromIntegral $ L.length str - 4)
                     *> putLazyByteString str)
-  L.hPut h buf
-  hFlush h
+  L.hPut handle buf
+  hFlush handle
 
+drawDefaultImage :: IO Surface
 drawDefaultImage = do
-  surf <- createImageSurface FormatARGB32 400 48
+  surf <- createImageSurface FormatARGB32 1920 1080
   let r = 16
       s = 2
       w = 400
       h = 48
+      x = 1920 - w
+      y = 1080 - h
   renderWith surf $ do
     setOperator OperatorClear
     paint
     setOperator OperatorOver
+    translate x y
     arc (r+s) (r+s) r pi (pi*1.5)
     lineTo (w-r-s) s
     arc (w-r-s) (r+s) r (pi*1.5) (pi*2)
@@ -143,17 +149,21 @@ drawDefaultImage = do
   return surf
 
 data LoopState = LoopState {
+    loopWindow       :: Window,
     loopPipeHandle   :: Handle,
     loopShmHandle    :: Maybe (Ptr ()),
     loopMVar         :: MVar Surface,
+    loopTexture      :: Surface,
     loopDefaultImage :: Surface
   }
 
+setupPipe :: IO Handle
 setupPipe = do
   h <- connectTo "" (UnixSocket "/home/ben/.MumbleOverlayPipe")
   hPutOverlayMsg h $ OverlayMsgInit 1920 1080
   return h
 
+initShm :: FilePath -> IO (Ptr ())
 initShm path = bracket
     (shmOpen path (ShmOpenFlags False False False False)
                   (unionFileModes ownerReadMode ownerWriteMode))
@@ -162,13 +172,17 @@ initShm path = bracket
   where
     size = (1920*1080*4)
 
+deinitShm :: Ptr () -> IO ()
 deinitShm ptr = c'munmap ptr size >> return ()
   where
     size = (1920*1080*4)
 
-pipeLoop state@LoopState { loopPipeHandle = h,
+pipeLoop :: LoopState -> IO ()
+pipeLoop state@LoopState { loopWindow = wnd,
+                           loopPipeHandle = pipeHandle,
                            loopShmHandle = ptr,
                            loopMVar = ref,
+                           loopTexture = tex,
                            loopDefaultImage = def } = do
     newState <- go `onException` maybe (return ())
                                        deinitShm
@@ -176,24 +190,40 @@ pipeLoop state@LoopState { loopPipeHandle = h,
     pipeLoop newState
   where
     go = do
-      emsg <- try $ hGetOverlayMsg h
+      emsg <- try $ hGetOverlayMsg pipeHandle
       case emsg of
         Right msg -> handleMsg msg
         Left e -> do
           hPutStrLn stderr (show (e :: IOException))
-          hClose h
+          hClose pipeHandle
           swapMVar ref def
           reinit 0
     handleMsg msg = do
       print msg
       case msg of
         OverlayMsgShmem path -> do
-          hPutOverlayMsg h msg
-          ptr <- initShm path
+          hPutOverlayMsg pipeHandle msg
+          newPtr <- initShm path
           maybe (return ()) deinitShm $ loopShmHandle state
-          print ptr
-          return $ state { loopShmHandle = Just ptr }
+          return $ state { loopShmHandle = Just newPtr }
+        OverlayMsgBlit x y w h -> do
+          when (isJust ptr) $ do
+            blit x y w h
+            swapMVar ref tex
+            postGUIAsync $ widgetQueueDraw wnd
+          return state
         _ -> return state
+    blit x y w h = do
+      stride <- imageSurfaceGetStride tex
+      px <- imageSurfaceGetPixels tex
+      let ptr32 = castPtr (fromJust ptr) :: Ptr Word32
+      surfaceFlush tex
+      forM_ [y .. (h-1)] $ \y' ->
+        forM_ [x .. (w-1)] $ \x' -> do
+          pixel <- peekElemOff ptr32 (y' * w + x')
+          let offset = y' * (stride `div` 4) + x'
+          writeArray px offset (pixel :: Word32)
+      surfaceMarkDirty tex
     reinit n = do
       eh <- try setupPipe
       case eh of
@@ -201,12 +231,7 @@ pipeLoop state@LoopState { loopPipeHandle = h,
           hPutStrLn stderr (show (e :: IOException))
           threadDelay (n * 1000000)
           reinit $ min 20 (succ n)
-        Right h -> return $ state { loopPipeHandle = h }
-
-setRGBAColorMap window screen =
-  screenGetRGBAColormap screen >>= \mc -> case mc of
-    Just c  -> widgetSetColormap window c >> putStrLn "okay"
-    Nothing -> hPutStrLn stderr "no rgba colormap"
+        Right newHandle -> return $ state { loopPipeHandle = newHandle }
 
 main = do
     initGUI
@@ -216,22 +241,25 @@ main = do
     widgetSetAppPaintable w True
     windowSetDecorated w False
     widgetSetEvents w []
-    let size = Just (400, 48) in windowSetGeometryHints w (Nothing :: Maybe Widget) size size Nothing Nothing Nothing
+    let size = Just (1920, 1080) in windowSetGeometryHints w (Nothing :: Maybe Widget) size size Nothing Nothing Nothing
 
     widgetGetScreen w >>= setRGBAColorMap w
     on w screenChanged $ setRGBAColorMap w
 
     defaultImage <- drawDefaultImage
+    texture <- createImageSurface FormatARGB32 1920 1080
     ref <- newMVar defaultImage
     h <- setupPipe
     forkIO $ pipeLoop LoopState {
+      loopWindow = w,
       loopPipeHandle = h,
       loopShmHandle = Nothing,
       loopMVar = ref,
+      loopTexture = texture,
       loopDefaultImage = defaultImage
     } `catch` \e -> postGUIAsync $ throwIO (e :: SomeException)
 
-    onExpose w $ \e -> do
+    onExpose w $ \_ -> do
       dw <- widgetGetDrawWindow w
       renderWithDrawable dw $ do
         setOperator OperatorClear
@@ -244,4 +272,8 @@ main = do
 
     widgetShowAll w
     mainGUI
-
+  where
+    setRGBAColorMap window screen =
+      screenGetRGBAColormap screen >>= \mc -> case mc of
+        Just c  -> widgetSetColormap window c >> putStrLn "okay"
+        Nothing -> hPutStrLn stderr "no rgba colormap"
