@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns, ForeignFunctionInterface #-}
+{-# LANGUAGE ViewPatterns #-}
 
 import Control.Concurrent
 import Control.Monad
@@ -77,7 +77,7 @@ hGetOverlayMsg h = do
     _ -> throw $ userError "hGetOverlayMsg: unknown message type"
 
 hPutOverlayMsg :: Handle -> OverlayMsg -> IO ()
-hPutOverlayMsg handle msg = do
+hPutOverlayMsg pipeHandle msg = do
   let n = putWord32host . fromIntegral
       s l str =    putLazyByteString (L8.pack str)
                 *> replicateM_ (l - length str) (putWord8 0)
@@ -92,8 +92,8 @@ hPutOverlayMsg handle msg = do
   let buf = runPut (   putWord32host overlayMagicNumber
                     *> putWord32host (fromIntegral $ L.length str - 4)
                     *> putLazyByteString str)
-  L.hPut handle buf
-  hFlush handle
+  L.hPut pipeHandle buf
+  hFlush pipeHandle
 
 drawDefaultImage :: IO Surface
 drawDefaultImage = do
@@ -122,7 +122,7 @@ drawDefaultImage = do
     setSourceRGBA 0 0 0 1
     setLineWidth (s*2)
     stroke
-    moveTo r (36)
+    moveTo r 36
     setSourceRGBA 1 1 1 1
     setFontSize 28
     showText "No connection to Mumble"
@@ -150,12 +150,12 @@ initShm path = bracket
     closeFd
     (\fd -> c'mmap nullPtr size c'PROT_READ c'MAP_SHARED (fromIntegral fd) 0)
   where
-    size = (1920*1080*4)
+    size = 1920*1080*4
 
 deinitShm :: Ptr () -> IO ()
 deinitShm ptr = c'munmap ptr size >> return ()
   where
-    size = (1920*1080*4)
+    size = 1920*1080*4
 
 pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
