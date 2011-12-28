@@ -20,7 +20,6 @@ import Foreign.Ptr
 import Foreign.Storable
 import Bindings.MMap
 import Data.Maybe
-import Text.Printf
 
 import Prelude hiding (catch)
 import Control.Exception
@@ -133,8 +132,7 @@ data LoopState = LoopState {
     loopWindow       :: Window,
     loopPipeHandle   :: Handle,
     loopShmHandle    :: Maybe (Ptr ()),
-    loopOffset       :: MVar (Int, Int),
-    loopMVar         :: MVar Surface,
+    loopMVar         :: MVar (Surface, Rectangle),
     loopTexture      :: Surface,
     loopDefaultImage :: Surface
   }
@@ -173,7 +171,6 @@ pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
                            loopPipeHandle = pipeHandle,
                            loopShmHandle = ptr,
-                           loopOffset = off,
                            loopMVar = ref,
                            loopTexture = tex,
                            loopDefaultImage = def } = do
@@ -189,12 +186,11 @@ pipeLoop state@LoopState { loopWindow = wnd,
         Left e -> do
           hPutStrLn stderr (show (e :: IOException))
           hClose pipeHandle
-          swapMVar ref def
-          swapMVar off (0, 0)
+          swapMVar ref (def, Rectangle 0 0 0 0)
+          (w, h) <- getImageSurfaceSize def
           postGUIAsync $ do
-            (w, h) <- getImageSurfaceSize def
-            fixWindowSize wnd w h
             windowMove wnd (1920-w) (1080-h)
+            fixWindowSize wnd w h
             widgetQueueDraw wnd
           reinit 0
     handleMsg msg = do
@@ -202,21 +198,21 @@ pipeLoop state@LoopState { loopWindow = wnd,
       case msg of
         OverlayMsgShmem path -> do
           hPutOverlayMsg pipeHandle msg
-          newPtr <- initShm path
+          swapMVar ref (tex, Rectangle 0 0 0 0)
+          postGUIAsync $ fixWindowSize wnd 0 0
           maybe (return ()) deinitShm $ loopShmHandle state
+          newPtr <- initShm path
           return $ state { loopShmHandle = Just newPtr }
         OverlayMsgBlit x y w h -> do
           when (isJust ptr) $ do
             blit x y w h
-            swapMVar ref tex
-            return ()
             postGUIAsync $ widgetQueueDraw wnd
           return state
         OverlayMsgActive x y w h -> do
+          swapMVar ref (tex, Rectangle x y w h)
           postGUIAsync $ do
-            fixWindowSize wnd w h
             windowMove wnd x y
-            swapMVar off (x, y)
+            fixWindowSize wnd w h
             widgetQueueDraw wnd
           return state
         _ -> return state
@@ -258,14 +254,12 @@ main = do
     windowMove w (1920 - defaultWidth) (1080 - defaultHeight)
 
     texture <- createImageSurface FormatARGB32 1920 1080
-    ref <- newMVar defaultImage
-    off <- newMVar (0, 0)
+    ref <- newMVar (defaultImage, Rectangle 0 0 defaultWidth defaultHeight)
     h <- setupPipe
     forkIO $ pipeLoop LoopState {
       loopWindow = w,
       loopPipeHandle = h,
       loopShmHandle = Nothing,
-      loopOffset = off,
       loopMVar = ref,
       loopTexture = texture,
       loopDefaultImage = defaultImage
@@ -273,7 +267,7 @@ main = do
 
     onExposeRect w $ \_ -> do
       dw <- widgetGetDrawWindow w
-      withMVar off $ \(offX, offY) -> withMVar ref $ \surf -> do
+      withMVar ref $ \(surf, Rectangle offX offY _ _) -> do
         renderWithDrawable dw $ do
           translate (fromIntegral $ -offX) (fromIntegral $ -offY)
           setOperator OperatorSource
