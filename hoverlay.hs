@@ -20,6 +20,7 @@ import Foreign.Ptr
 import Foreign.Storable
 import Bindings.MMap
 import Data.Maybe
+import Text.Printf
 
 import Prelude hiding (catch)
 import Control.Exception
@@ -97,13 +98,13 @@ hPutOverlayMsg pipeHandle msg = do
 
 drawDefaultImage :: IO Surface
 drawDefaultImage = do
-  surf <- createImageSurface FormatARGB32 1920 1080
   let r = 16
       s = 2
       w = 400
       h = 48
-      x = 1920 - w
-      y = 1080 - h
+      x = 0 --1920 - w
+      y = 0 --1080 - h  
+  surf <- createImageSurface FormatARGB32 (round w) (round h)
   renderWith surf $ do
     setOperator OperatorClear
     paint
@@ -132,6 +133,7 @@ data LoopState = LoopState {
     loopWindow       :: Window,
     loopPipeHandle   :: Handle,
     loopShmHandle    :: Maybe (Ptr ()),
+    loopOffset       :: MVar (Int, Int),
     loopMVar         :: MVar Surface,
     loopTexture      :: Surface,
     loopDefaultImage :: Surface
@@ -157,10 +159,21 @@ deinitShm ptr = c'munmap ptr size >> return ()
   where
     size = 1920*1080*4
 
+fixWindowSize window w h =
+    windowSetGeometryHints window (Nothing :: Maybe Widget)
+           size size Nothing Nothing Nothing
+  where
+    size = Just (w, h)
+
+getImageSurfaceSize surf =
+  liftM2 (,) (imageSurfaceGetWidth surf)
+             (imageSurfaceGetHeight surf)
+
 pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
                            loopPipeHandle = pipeHandle,
                            loopShmHandle = ptr,
+                           loopOffset = off,
                            loopMVar = ref,
                            loopTexture = tex,
                            loopDefaultImage = def } = do
@@ -177,6 +190,12 @@ pipeLoop state@LoopState { loopWindow = wnd,
           hPutStrLn stderr (show (e :: IOException))
           hClose pipeHandle
           swapMVar ref def
+          swapMVar off (0, 0)
+          postGUIAsync $ do
+            (w, h) <- getImageSurfaceSize def
+            fixWindowSize wnd w h
+            windowMove wnd (1920-w) (1080-h)
+            widgetQueueDraw wnd
           reinit 0
     handleMsg msg = do
       print msg
@@ -190,7 +209,15 @@ pipeLoop state@LoopState { loopWindow = wnd,
           when (isJust ptr) $ do
             blit x y w h
             swapMVar ref tex
+            return ()
             postGUIAsync $ widgetQueueDraw wnd
+          return state
+        OverlayMsgActive x y w h -> do
+          postGUIAsync $ do
+            fixWindowSize wnd w h
+            windowMove wnd x y
+            swapMVar off (x, y)
+            widgetQueueDraw wnd
           return state
         _ -> return state
     blit x y w h = do
@@ -198,9 +225,10 @@ pipeLoop state@LoopState { loopWindow = wnd,
       px <- imageSurfaceGetPixels tex
       let ptr32 = castPtr (fromJust ptr) :: Ptr Word32
       surfaceFlush tex
-      forM_ [y .. (h-1)] $ \y' ->
-        forM_ [x .. (w-1)] $ \x' -> do
-          pixel <- peekElemOff ptr32 (y' * w + x')
+      (mw, mh) <- getImageSurfaceSize tex
+      forM_ [y .. y+h-1] $ \y' ->
+        forM_ [x .. x+w-1] $ \x' -> do
+          pixel <- peekElemOff ptr32 (y' * mw + x')
           let offset = y' * (stride `div` 4) + x'
           writeArray px offset (pixel :: Word32)
       surfaceMarkDirty tex
@@ -221,34 +249,36 @@ main = do
     widgetSetAppPaintable w True
     windowSetDecorated w False
     widgetSetEvents w []
-    let size = Just (1920, 1080) in windowSetGeometryHints w (Nothing :: Maybe Widget) size size Nothing Nothing Nothing
-
     widgetGetScreen w >>= setRGBAColorMap w
     on w screenChanged $ setRGBAColorMap w
 
     defaultImage <- drawDefaultImage
+    (defaultWidth, defaultHeight) <- getImageSurfaceSize defaultImage
+    fixWindowSize w defaultWidth defaultHeight
+    windowMove w (1920 - defaultWidth) (1080 - defaultHeight)
+
     texture <- createImageSurface FormatARGB32 1920 1080
     ref <- newMVar defaultImage
+    off <- newMVar (0, 0)
     h <- setupPipe
     forkIO $ pipeLoop LoopState {
       loopWindow = w,
       loopPipeHandle = h,
       loopShmHandle = Nothing,
+      loopOffset = off,
       loopMVar = ref,
       loopTexture = texture,
       loopDefaultImage = defaultImage
     } `catch` \e -> postGUIAsync $ throwIO (e :: SomeException)
 
-    onExpose w $ \_ -> do
+    onExposeRect w $ \_ -> do
       dw <- widgetGetDrawWindow w
-      renderWithDrawable dw $ do
-        setOperator OperatorClear
-        paint
-        setOperator OperatorOver
-        join . liftIO $ withMVar ref $ \surf -> return $ do
+      withMVar off $ \(offX, offY) -> withMVar ref $ \surf -> do
+        renderWithDrawable dw $ do
+          translate (fromIntegral $ -offX) (fromIntegral $ -offY)
+          setOperator OperatorSource
           setSourceSurface surf 0 0
           paint
-      return True
 
     widgetShowAll w
     mainGUI
