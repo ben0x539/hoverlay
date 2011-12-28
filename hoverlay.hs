@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ViewPatterns, ForeignFunctionInterface #-}
 
 import Control.Concurrent
 import Control.Monad
@@ -9,6 +9,8 @@ import Data.Array.MArray
 import Data.Maybe
 import Foreign.Ptr
 import Foreign.Storable
+import Foreign.ForeignPtr
+import Foreign.C.Types
 
 import Prelude hiding (catch)
 import Control.Exception
@@ -24,6 +26,7 @@ import System.Posix.SharedMem
 import System.Posix.Files
 
 import Network
+import System.Glib.GObject
 import Graphics.UI.Gtk
 import Graphics.Rendering.Cairo
 import Bindings.MMap
@@ -244,6 +247,30 @@ pipeLoop state@LoopState { loopWindow = wnd,
           reinit $ min 20 (succ n)
         Right newHandle -> return $ state { loopPipeHandle = newHandle }
 
+data CairoRegion
+foreign import ccall unsafe
+  cairo_region_create :: IO (Ptr CairoRegion)
+foreign import ccall unsafe
+  cairo_region_destroy :: Ptr CairoRegion -> IO ()
+
+foreign import ccall unsafe
+  gdk_window_input_shape_combine_region :: Ptr GObject -> Ptr CairoRegion -> CInt -> CInt -> IO ()
+foreign import ccall unsafe
+  gdk_window_set_override_redirect :: Ptr GObject -> CInt -> IO ()
+
+drawWindowInputShapeCombineRegion :: DrawWindowClass self => self -> Ptr CairoRegion -> Int -> Int -> IO ()
+drawWindowInputShapeCombineRegion self region offX offY =
+    withForeignPtr (unGObject (toGObject self)) $ \ptrSelf ->
+      gdk_window_input_shape_combine_region ptrSelf region cOffX cOffY
+  where
+    cOffX = fromIntegral offX
+    cOffY = fromIntegral offY
+
+drawWindowSetOverrideRedirect :: DrawWindowClass self => self -> Bool -> IO ()
+drawWindowSetOverrideRedirect self bool =
+    withForeignPtr (unGObject (toGObject self)) $ \ptrSelf ->
+      gdk_window_set_override_redirect ptrSelf (fromIntegral $ fromEnum bool)
+
 main = do
     initGUI
     w <- windowNew
@@ -254,6 +281,13 @@ main = do
     widgetSetEvents w []
     widgetGetScreen w >>= setRGBAColorMap w
     on w screenChanged $ setRGBAColorMap w
+
+    onRealize w $ do
+      dw <- widgetGetDrawWindow w
+
+      drawWindowSetOverrideRedirect dw True
+      bracket cairo_region_create cairo_region_destroy $ \region ->
+        drawWindowInputShapeCombineRegion dw region 0 0
 
     defaultImage <- drawDefaultImage
     (defaultWidth, defaultHeight) <- getImageSurfaceSize defaultImage
