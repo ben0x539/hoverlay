@@ -4,25 +4,29 @@ import Control.Concurrent
 import Control.Monad
 import Control.Applicative
 import System.IO
-import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.Lazy.Char8 as L8
-import Graphics.UI.Gtk
-import Graphics.Rendering.Cairo
-import Network
-import Data.Binary
-import Data.Binary.Put
-import Data.Binary.Get
-import System.Posix.IO
-import System.Posix.SharedMem
-import System.Posix.Files
+import System.Environment
 import Data.Array.MArray
+import Data.Maybe
 import Foreign.Ptr
 import Foreign.Storable
-import Bindings.MMap
-import Data.Maybe
 
 import Prelude hiding (catch)
 import Control.Exception
+
+import Data.Binary
+import Data.Binary.Put
+import Data.Binary.Get
+import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy.Char8 as L8
+
+import System.Posix.IO
+import System.Posix.SharedMem
+import System.Posix.Files
+
+import Network
+import Graphics.UI.Gtk
+import Graphics.Rendering.Cairo
+import Bindings.MMap
 
 data OverlayMsg =
       OverlayMsgInit {
@@ -101,8 +105,8 @@ drawDefaultImage = do
       s = 2
       w = 400
       h = 48
-      x = 0 --1920 - w
-      y = 0 --1080 - h  
+      x = 0
+      y = 0
   surf <- createImageSurface FormatARGB32 (round w) (round h)
   renderWith surf $ do
     setOperator OperatorClear
@@ -139,7 +143,8 @@ data LoopState = LoopState {
 
 setupPipe :: IO Handle
 setupPipe = do
-  h <- connectTo "" (UnixSocket "/home/ben/.MumbleOverlayPipe")
+  home <- getEnv "HOME"
+  h <- connectTo "" (UnixSocket $ home ++ "/.MumbleOverlayPipe")
   hPutOverlayMsg h $ OverlayMsgInit 1920 1080
   return h
 
@@ -157,12 +162,14 @@ deinitShm ptr = c'munmap ptr size >> return ()
   where
     size = 1920*1080*4
 
+fixWindowSize :: Window -> Int -> Int -> IO ()
 fixWindowSize window w h =
     windowSetGeometryHints window (Nothing :: Maybe Widget)
            size size Nothing Nothing Nothing
   where
     size = Just (w, h)
 
+getImageSurfaceSize :: Surface -> IO (Int, Int)
 getImageSurfaceSize surf =
   liftM2 (,) (imageSurfaceGetWidth surf)
              (imageSurfaceGetHeight surf)
@@ -267,7 +274,7 @@ main = do
 
     onExposeRect w $ \_ -> do
       dw <- widgetGetDrawWindow w
-      withMVar ref $ \(surf, Rectangle offX offY _ _) -> do
+      withMVar ref $ \(surf, Rectangle offX offY _ _) ->
         renderWithDrawable dw $ do
           translate (fromIntegral $ -offX) (fromIntegral $ -offY)
           setOperator OperatorSource
