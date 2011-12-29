@@ -1,14 +1,13 @@
-{-# LANGUAGE ViewPatterns, ForeignFunctionInterface #-}
+{-# LANGUAGE ViewPatterns, ForeignFunctionInterface, BangPatterns #-}
 
 import Control.Concurrent
 import Control.Monad
 import Control.Applicative
 import System.IO
 import System.Environment
-import Data.Array.MArray
+import Data.Array.Base
 import Data.Maybe
 import Foreign.Ptr
-import Foreign.Storable
 import Foreign.ForeignPtr
 import Foreign.C.Types
 
@@ -24,12 +23,15 @@ import qualified Data.ByteString.Lazy.Char8 as L8
 import System.Posix.IO
 import System.Posix.SharedMem
 import System.Posix.Files
+import System.Posix.Signals
 
 import Network
 import System.Glib.GObject
 import Graphics.UI.Gtk
 import Graphics.Rendering.Cairo
 import Bindings.MMap
+
+import Unsafe.Coerce
 
 data OverlayMsg =
       OverlayMsgInit {
@@ -177,6 +179,14 @@ getImageSurfaceSize surf =
   liftM2 (,) (imageSurfaceGetWidth surf)
              (imageSurfaceGetHeight surf)
 
+foreign import ccall unsafe "memcpy"
+  c_memcpy :: Ptr a -> Ptr b -> CSize -> IO (Ptr ())
+
+data SurfaceDataLookalike i e = SurfaceDataLookalike !Surface
+                                                     {-# UNPACK #-} !(Ptr e)
+                                                                    !(i,i)
+                                                     {-# UNPACK #-} !Int
+
 pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
                            loopPipeHandle = pipeHandle,
@@ -226,18 +236,39 @@ pipeLoop state@LoopState { loopWindow = wnd,
             widgetQueueDraw wnd
           return state
         _ -> return state
-    blit x y w h = do
-      stride <- imageSurfaceGetStride tex
-      px <- imageSurfaceGetPixels tex
-      let ptr32 = castPtr (fromJust ptr) :: Ptr Word32
+    blit x y w h = {-# SCC "blit" #-} do
       surfaceFlush tex
-      (mw, mh) <- getImageSurfaceSize tex
-      forM_ [y .. y+h-1] $ \y' ->
-        forM_ [x .. x+w-1] $ \x' -> do
-          pixel <- peekElemOff ptr32 (y' * mw + x')
-          let offset = y' * (stride `div` 4) + x'
-          writeArray px offset (pixel :: Word32)
+      px <- imageSurfaceGetPixels tex :: IO (SurfaceData Int Word32)
+      !stride <- imageSurfaceGetStride tex
+      let !ptr32 = castPtr (fromJust ptr) :: Ptr Word32
+      (!mw, !mh) <- getImageSurfaceSize tex
+      (_, succ -> pxSize) <- getBounds px
+      let maxOffset = stride * (y+h)
+      when (pxSize < maxOffset) $
+        throwIO (userError "Active overlay area outside of texture bounds")
+      -- hacky:
+      let (SurfaceDataLookalike _ texPtr _ _) = unsafeCoerce px
+      {-# SCC "loop-y" #-} loop y (y+h) $ \ !y' -> {-# SCC "loop-y-body" #-} do
+        let !sourcePtr = (ptr32  `plusPtr` (y' * mw * 4))
+            !destPtr   = (texPtr `plusPtr` (y' * stride))
+            !count     = fromIntegral $ w * 4
+        {-# SCC "memcpy" #-} c_memcpy destPtr sourcePtr count >> return ()
+      unsafeRead px 0 -- to call touchForeignPtr
+      -- slightly less hacky:
+      --{-# SCC "loop-y" #-} loop y (y+h) $ \ !y' -> {-# SCC "loop-y-body" #-} do
+      --  let !rowPtr    = ptr32 `plusPtr` (y' * mw * 4)
+      --      !rowOffset = y' * stride `div` 4
+      --  {-# SCC "loop-x" #-} loop x (x+w) $ \ !x' -> {-# SCC "loop-x-body" #-}  do
+      --    !pixel <- {-# SCC "peekElemOff" #-} peekElemOff rowPtr x'
+      --    let !offset = rowOffset + x'
+      --    {-# SCC "unsafeWrite" #-} unsafeWrite px (rowOffset + x') pixel
       surfaceMarkDirty tex
+    loop :: Int -> Int -> (Int -> IO ()) -> IO ()
+    loop i max body = go i
+      where
+        go !i
+          | i < max   = body i >> go (succ i)
+          | otherwise = return ()
     reinit n = do
       eh <- try setupPipe
       case eh of
@@ -316,6 +347,8 @@ main = do
           paint
 
     widgetShowAll w
+
+    installHandler sigINT (CatchOnce mainQuit) Nothing
     mainGUI
   where
     setRGBAColorMap window screen =
