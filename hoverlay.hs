@@ -77,8 +77,8 @@ hGetOverlayMsg h = do
   when (L.length bstr < l) $
     throw $ userError "hGetOverlayMsg: couldn't read message body"
   let n = getNum32host
-      s = ((L8.unpack . fst . L.break (==0)) `fmap` getRemainingLazyByteString)
-      b = (toEnum `fmap` getNum32host)
+      s = (L8.unpack . fst . L.break (==0)) `fmap` getRemainingLazyByteString
+      b = toEnum `fmap` getNum32host
   return . flip runGet bstr $ case runGet getWord32host tstr of
     0 -> OverlayMsgInit <$> n <*> n
     1 -> OverlayMsgShmem <$> s
@@ -191,6 +191,13 @@ data SurfaceDataLookalike i e = SurfaceDataLookalike !Surface
                                                                     !(i,i)
                                                      {-# UNPACK #-} !Int
 
+loop :: Int -> Int -> (Int -> IO ()) -> IO ()
+loop i max body = go i
+  where
+    go !i
+      | i < max   = body i >> go (succ i)
+      | otherwise = return ()
+
 pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
                            loopPipeHandle = pipeHandle,
@@ -240,7 +247,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
             widgetQueueDraw wnd
           return state
         _ -> return state
-    blit x y w h = {-# SCC "blit" #-} do
+    blit x y w h = do
       surfaceFlush tex
       px <- imageSurfaceGetPixels tex :: IO (SurfaceData Int Word32)
       !stride <- imageSurfaceGetStride tex
@@ -252,27 +259,21 @@ pipeLoop state@LoopState { loopWindow = wnd,
         throwIO (userError "Active overlay area outside of texture bounds")
       -- hacky:
       let (SurfaceDataLookalike _ texPtr _ _) = unsafeCoerce px
-      {-# SCC "loop-y" #-} loop y (y+h) $ \ !y' -> {-# SCC "loop-y-body" #-} do
-        let !sourcePtr = (ptr32  `plusPtr` (y' * mw * 4))
-            !destPtr   = (texPtr `plusPtr` (y' * stride))
+      loop y (y+h) $ \ !y' -> do
+        let !sourcePtr = ptr32  `plusPtr` ((y' * mw + x) * 4)
+            !destPtr   = texPtr `plusPtr` (y' * stride)
             !count     = fromIntegral $ w * 4
-        {-# SCC "memcpy" #-} c_memcpy destPtr sourcePtr count >> return ()
+        c_memcpy destPtr sourcePtr count >> return ()
       unsafeRead px 0 -- to call touchForeignPtr
       -- slightly less hacky:
-      --{-# SCC "loop-y" #-} loop y (y+h) $ \ !y' -> {-# SCC "loop-y-body" #-} do
+      -- loop y (y+h) $ \ !y' -> do
       --  let !rowPtr    = ptr32 `plusPtr` (y' * mw * 4)
       --      !rowOffset = y' * stride `div` 4
-      --  {-# SCC "loop-x" #-} loop x (x+w) $ \ !x' -> {-# SCC "loop-x-body" #-}  do
-      --    !pixel <- {-# SCC "peekElemOff" #-} peekElemOff rowPtr x'
+      --  loop x (x+w) $ \ !x' -> do
+      --    !pixel <- peekElemOff rowPtr x'
       --    let !offset = rowOffset + x'
-      --    {-# SCC "unsafeWrite" #-} unsafeWrite px (rowOffset + x') pixel
+      --    unsafeWrite px (rowOffset + x') pixel
       surfaceMarkDirty tex
-    loop :: Int -> Int -> (Int -> IO ()) -> IO ()
-    loop i max body = go i
-      where
-        go !i
-          | i < max   = body i >> go (succ i)
-          | otherwise = return ()
     reinit n = do
       eh <- try setupPipe
       case eh of
