@@ -33,6 +33,10 @@ import Bindings.MMap
 
 import Unsafe.Coerce
 
+myWidth, myHeight :: Num a => a
+myWidth  = 1920
+myHeight = 1080
+
 data OverlayMsg =
       OverlayMsgInit {
         overlayMsgInitWidth  :: Int,
@@ -150,7 +154,7 @@ setupPipe :: IO Handle
 setupPipe = do
   home <- getEnv "HOME"
   h <- connectTo "" (UnixSocket $ home ++ "/.MumbleOverlayPipe")
-  hPutOverlayMsg h $ OverlayMsgInit 1920 1080
+  hPutOverlayMsg h $ OverlayMsgInit myWidth myHeight
   return h
 
 initShm :: FilePath -> IO (Ptr ())
@@ -160,12 +164,12 @@ initShm path = bracket
     closeFd
     (\fd -> c'mmap nullPtr size c'PROT_READ c'MAP_SHARED (fromIntegral fd) 0)
   where
-    size = 1920*1080*4
+    size = myWidth*myHeight*4
 
 deinitShm :: Ptr () -> IO ()
 deinitShm ptr = c'munmap ptr size >> return ()
   where
-    size = 1920*1080*4
+    size = myWidth*myHeight*4
 
 fixWindowSize :: Window -> Int -> Int -> IO ()
 fixWindowSize window w h =
@@ -209,7 +213,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
           swapMVar ref (def, Rectangle 0 0 0 0)
           (w, h) <- getImageSurfaceSize def
           postGUIAsync $ do
-            windowMove wnd (1920-w) (1080-h)
+            windowMove wnd (myWidth-w) (myHeight-h)
             fixWindowSize wnd w h
             widgetQueueDraw wnd
           reinit 0
@@ -323,9 +327,9 @@ main = do
     defaultImage <- drawDefaultImage
     (defaultWidth, defaultHeight) <- getImageSurfaceSize defaultImage
     fixWindowSize w defaultWidth defaultHeight
-    windowMove w (1920 - defaultWidth) (1080 - defaultHeight)
+    windowMove w (myWidth - defaultWidth) (myHeight - defaultHeight)
 
-    texture <- createImageSurface FormatARGB32 1920 1080
+    texture <- createImageSurface FormatARGB32 myWidth myHeight
     ref <- newMVar (defaultImage, Rectangle 0 0 defaultWidth defaultHeight)
     h <- setupPipe
     forkIO $ pipeLoop LoopState {
