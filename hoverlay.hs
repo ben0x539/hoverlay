@@ -1,4 +1,4 @@
-{-# LANGUAGE ViewPatterns, ForeignFunctionInterface, BangPatterns #-}
+{-# LANGUAGE ViewPatterns, ForeignFunctionInterface, BangPatterns, EmptyDataDecls #-}
 
 import Control.Concurrent
 import Control.Monad
@@ -358,5 +358,5 @@ main = do
   where
     setRGBAColorMap window screen =
       screenGetRGBAColormap screen >>= \mc -> case mc of
-        Just c  -> widgetSetColormap window c >> putStrLn "okay"
+        Just c  -> widgetSetColormap window c
         Nothing -> hPutStrLn stderr "no rgba colormap"
