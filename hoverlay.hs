@@ -110,10 +110,10 @@ hPutOverlayMsg pipeHandle msg = do
 
 drawDefaultImage :: IO Surface
 drawDefaultImage = do
-  let r = 16
-      s = 2
-      w = 400
-      h = 48
+  let r = 6
+      s = 0
+      w = 288
+      h = 32
       x = 0
       y = 0
   surf <- createImageSurface FormatARGB32 (round w) (round h)
@@ -130,14 +130,14 @@ drawDefaultImage = do
     lineTo (r+s) (h-s)
     arc (r+s) (h-r-s) r (pi*0.5) pi
     lineTo s (r+s)
-    setSourceRGBA 0.5 0.5 0.5 0.5
+    setSourceRGBA 0 0 0 0.7
     fillPreserve
     setSourceRGBA 0 0 0 1
     setLineWidth (s*2)
     stroke
-    moveTo r 36
+    moveTo (r * 2 ) (h * 0.75)
     setSourceRGBA 1 1 1 1
-    setFontSize 28
+    setFontSize 20
     showText "No connection to Mumble"
   return surf
 
