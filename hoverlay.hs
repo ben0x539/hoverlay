@@ -143,6 +143,7 @@ drawDefaultImage = do
 
 data LoopState = LoopState {
     loopWindow       :: Window,
+    loopPipePath     :: String,
     loopPipeHandle   :: Handle,
     loopShmHandle    :: Maybe (Ptr ()),
     loopMVar         :: MVar (Surface, Rectangle),
@@ -150,10 +151,9 @@ data LoopState = LoopState {
     loopDefaultImage :: Surface
   }
 
-setupPipe :: IO Handle
-setupPipe = do
-  home <- getEnv "HOME"
-  h <- connectTo "" (UnixSocket $ home ++ "/.MumbleOverlayPipe")
+setupPipe :: String -> IO Handle
+setupPipe path = do
+  h <- connectTo "" (UnixSocket $ path)
   hPutOverlayMsg h $ OverlayMsgInit myWidth myHeight
   return h
 
@@ -200,6 +200,7 @@ loop i max body = go i
 
 pipeLoop :: LoopState -> IO ()
 pipeLoop state@LoopState { loopWindow = wnd,
+                           loopPipePath   = pipePath,
                            loopPipeHandle = pipeHandle,
                            loopShmHandle = ptr,
                            loopMVar = ref,
@@ -275,7 +276,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
       --    unsafeWrite px (rowOffset + x') pixel
       surfaceMarkDirty tex
     reinit n = do
-      eh <- try setupPipe
+      eh <- try $ setupPipe pipePath
       case eh of
         Left e -> do
           hPutStrLn stderr (show (e :: IOException))
@@ -308,6 +309,12 @@ drawWindowSetOverrideRedirect self bool =
       gdk_window_set_override_redirect ptrSelf (fromIntegral $ fromEnum bool)
 
 main = do
+    args <- getArgs
+    pipePath <- case args of
+      [path] -> return path
+      _      -> do
+        home <- getEnv "HOME"
+        return $ home ++ "/.MumbleOverlayPipe"
     initGUI
     w <- windowNew
     windowSetTitle w "Overlay Test"
@@ -332,9 +339,10 @@ main = do
 
     texture <- createImageSurface FormatARGB32 myWidth myHeight
     ref <- newMVar (defaultImage, Rectangle 0 0 defaultWidth defaultHeight)
-    h <- setupPipe
+    h <- setupPipe pipePath
     forkIO $ pipeLoop LoopState {
       loopWindow = w,
+      loopPipePath = pipePath,
       loopPipeHandle = h,
       loopShmHandle = Nothing,
       loopMVar = ref,
