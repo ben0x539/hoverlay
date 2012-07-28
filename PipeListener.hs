@@ -24,7 +24,6 @@ import Network
 import Bindings.MMap
 
 import Foreign.Ptr
-import Foreign.ForeignPtr
 import Foreign.C.Types
 
 import Unsafe.Coerce
@@ -33,6 +32,7 @@ import Prelude hiding (catch)
 
 import OverlayMsg
 
+forkPipeListener :: String -> Window -> IO ThreadId
 forkPipeListener pipePath w = do
   defaultImage <- drawDefaultImage
   (defaultWidth, defaultHeight) <- getImageSurfaceSize defaultImage
@@ -111,7 +111,7 @@ data LoopState = LoopState {
 
 setupPipe :: String -> IO Handle
 setupPipe path = do
-  h <- connectTo "" (UnixSocket $ path)
+  h <- connectTo "" (UnixSocket path)
   hPutOverlayMsg h $ OverlayMsgInit myWidth myHeight
   return h
 
@@ -150,10 +150,10 @@ data SurfaceDataLookalike i e = SurfaceDataLookalike !Surface
                                                      {-# UNPACK #-} !Int
 
 loop :: Int -> Int -> (Int -> IO ()) -> IO ()
-loop i max body = go i
+loop first end body = go first
   where
     go !i
-      | i < max   = body i >> go (succ i)
+      | i < end   = body i >> go (succ i)
       | otherwise = return ()
 
 pipeLoop :: LoopState -> IO ()
@@ -174,7 +174,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
       case emsg of
         Right msg -> handleMsg msg
         Left e -> do
-          hPutStrLn stderr (show (e :: IOException))
+          hPrint stderr (e :: IOException)
           hClose pipeHandle
           swapMVar ref (def, Rectangle 0 0 0 0)
           (w, h) <- getImageSurfaceSize def
@@ -211,7 +211,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
       px <- imageSurfaceGetPixels tex :: IO (SurfaceData Int Word32)
       !stride <- imageSurfaceGetStride tex
       let !ptr32 = castPtr (fromJust ptr) :: Ptr Word32
-      (!mw, !mh) <- getImageSurfaceSize tex
+      !mw <- imageSurfaceGetWidth tex
       (_, succ -> pxSize) <- getBounds px
       let maxOffset = stride * (y+h)
       when (pxSize < maxOffset) $
@@ -237,7 +237,7 @@ pipeLoop state@LoopState { loopWindow = wnd,
       eh <- try $ setupPipe pipePath
       case eh of
         Left e -> do
-          hPutStrLn stderr (show (e :: IOException))
+          hPrint stderr (e :: IOException)
           threadDelay (n * 1000000)
           reinit $ min 20 (succ n)
         Right newHandle -> return $ state { loopPipeHandle = newHandle }

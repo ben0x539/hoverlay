@@ -17,7 +17,7 @@ executable hoverlay
   other-modules:       PipeListener, OverlayMsg, GtkHelpers
                        -- threaded is necessary or the gtk mainloop will
                        -- block the ghc runtime.
-  ghc-options:         -O2 -threaded
+  ghc-options:         -O2 -threaded -Wall
   build-depends:       base          == 4.*,
                        binary        == 0.5.*,
                        bytestring    == 0.9.*,

@@ -1,15 +1,10 @@
-{-# LANGUAGE ViewPatterns #-}
-
 import Control.Monad
 import System.IO
 import System.Environment
 
-import Control.Exception
-
 import System.Posix.Signals
 
 import Graphics.UI.Gtk
-import Graphics.Rendering.Cairo
 
 import PipeListener
 import GtkHelpers
