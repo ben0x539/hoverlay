@@ -317,7 +317,7 @@ main = do
         return $ home ++ "/.MumbleOverlayPipe"
     initGUI
     w <- windowNew
-    windowSetTitle w "Overlay Test"
+    windowSetTitle w "Mumble Overlay"
     onDestroy w mainQuit
     widgetSetAppPaintable w True
     windowSetDecorated w False
